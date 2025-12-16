@@ -17,8 +17,6 @@ GAIN_Y = 0.08   # 로봇 Y축 민감도
 GAIN_Z = 0.12   # 로봇 Z축 민감도
 
 # 2. 방향 설정 (이미지 기준)
-# 축을 바꿨으므로 방향(부호)이 안 맞을 수 있습니다.
-# 로봇이 반대로 움직이면 -1 <-> 1 로 변경하세요.
 DIR_ROBOT_X = 1   
 DIR_ROBOT_Y = 1  
 DIR_ROBOT_Z = -1   
@@ -38,10 +36,12 @@ class VisionNode(Node):
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
         self.init_mediapipe()
-        print(">>> Vision Node Started (Axis Swapped)")
-        print("    - Hand Left/Right -> Robot X (Red Arrow)")
-        print("    - Hand Up/Down    -> Robot Y (Green Arrow)")
-        print("    - Hand Zoom       -> Robot Z (Blue Arrow)")
+        print(">>> Vision Node Started")
+        print("    - Fist(0): Grip Close")
+        print("    - Index(1): 2D Move")
+        print("    - Victory(2): 3D Move")
+        print("    - 3 Fingers(3): Stop")
+        print("    - All Open(5): Grip Open")
 
     def init_mediapipe(self):
         self.mp_hands = mp.solutions.hands
@@ -80,16 +80,17 @@ class VisionNode(Node):
 
         # 초기화 [x, y, z, rx, ry, rz]
         step = [0.0] * 6 
-        mode_id = 0
+        mode_id = 0 # 기본값: 정지
 
-        # 화면 중앙 가이드
+        # 화면 중앙 가이드 (십자선 혹은 원)
         cv2.circle(frame, (320, 240), 5, (0, 255, 255), 2)
         cv2.putText(frame, "Center", (330, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
                 fingers = self.get_finger_status(hand_landmarks)
-                
+                total_fingers = sum(fingers) # 펴진 손가락 개수
+
                 # 1. 손 중심 및 크기 계산
                 lm = hand_landmarks.landmark[9] 
                 cx, cy = int(lm.x * w), int(lm.y * h)
@@ -97,9 +98,7 @@ class VisionNode(Node):
                 lm_wrist = hand_landmarks.landmark[0]
                 curr_size = math.hypot((lm_wrist.x-lm.x)*w, (lm_wrist.y-lm.y)*h) * 2.5 
 
-                # 2. 오차 계산 (이미지 중심 - 현재 손 위치)
-                # err_cam_y : 화면 상하 오차
-                # err_cam_x : 화면 좌우 오차
+                # 2. 오차 계산
                 err_cam_y = (240 - cy) 
                 err_cam_x = (cx - 320)
                 err_cam_z = (curr_size - TARGET_HAND_SIZE)
@@ -109,56 +108,56 @@ class VisionNode(Node):
                 if abs(err_cam_x) < DEADZONE_PIXEL: err_cam_x = 0
                 if abs(err_cam_z) < DEADZONE_DIST: err_cam_z = 0
 
-                # =========================================================
-                # [수정된 부분] 축 매핑 교체 (X <-> Y)
-                # =========================================================
-                
-                # [기존] Robot X = Cam Y / Robot Y = Cam X
-                # [변경] Robot X = Cam X / Robot Y = Cam Y
-                
-                # 1. 로봇 X축 제어 (이제 웹캠의 좌우 움직임 사용)
+                # 3. 로봇 이동량 계산
                 move_x = err_cam_x * GAIN_X * DIR_ROBOT_X
-                
-                # 2. 로봇 Y축 제어 (이제 웹캠의 상하 움직임 사용)
                 move_y = err_cam_y * GAIN_Y * DIR_ROBOT_Y
-                
-                # 3. 로봇 Z축 제어 (그대로)
                 move_z = err_cam_z * GAIN_Z * DIR_ROBOT_Z
 
-                # =========================================================
-
-                # 4. 제스처 모드
+                # 4. 제스처 인식 로직 (수정됨)
                 
-                # (0) 주먹 ✊ -> 정지
-                if sum(fingers[1:]) == 0:
+                # (1) 주먹 ✊ -> 그리퍼 닫기 (Mode 3)
+                if total_fingers == 0:
+                    mode_id = 3
+                    cv2.putText(frame, "GRIP CLOSE (Fist)", (cx, cy-40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+
+                # (2) 보자기 🖐️ -> 그리퍼 열기 (Mode 4)
+                elif total_fingers == 5:
+                    mode_id = 4
+                    cv2.putText(frame, "GRIP OPEN (All Open)", (cx, cy-40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+
+                # (3) 손가락 3개 -> 정지 (Mode 0)
+                elif total_fingers == 3:
                     mode_id = 0
-                    cv2.putText(frame, "STOP (Fist)", (cx, cy-40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                    cv2.putText(frame, "STOP (3 Fingers)", (cx, cy-40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
 
-                # (1) 검지 ☝️ -> 평면 이동
-                elif fingers[1]==1 and sum(fingers[2:])==0:
+                # (4) 검지 ☝️ -> 2D 이동 (Mode 1)
+                elif fingers[1]==1 and total_fingers==1:
                     mode_id = 1
-                    step[0] = move_x 
-                    step[1] = move_y 
-                    step[2] = 0.0    
-                    cv2.putText(frame, "2D Move (Index)", (cx, cy-40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+                    step[0], step[1], step[2] = move_x, move_y, 0.0
+                    cv2.putText(frame, "2D Move", (cx, cy-40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
-                # (2) 가위 ✌️ -> 입체 이동
-                elif fingers[1]==1 and fingers[2]==1 and sum(fingers[3:])==0:
+                # (5) 가위 ✌️ -> 3D 이동 (Mode 2)
+                elif fingers[1]==1 and fingers[2]==1 and total_fingers==2:
                     mode_id = 2
-                    step[0] = move_x
-                    step[1] = move_y
-                    step[2] = move_z 
-                    cv2.putText(frame, "3D Move (Victory)", (cx, cy-40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                    step[0], step[1], step[2] = move_x, move_y, move_z
+                    cv2.putText(frame, "3D Move", (cx, cy-40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-                # 시각화
+                # ---------------------------------------------------------
+                # [복구된 부분] 시각화: 랜드마크 그리기 + 정보 텍스트 + 연결선
+                # ---------------------------------------------------------
                 self.mp_draw.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                 
+                # 이동 명령 정보 출력
                 info = f"RX:{step[0]:.1f} RY:{step[1]:.1f} RZ:{step[2]:.1f}"
                 cv2.putText(frame, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
+                # 손 크기 정보 출력
                 size_info = f"Hand Size: {int(curr_size)} (Target: {int(TARGET_HAND_SIZE)})"
                 cv2.putText(frame, size_info, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                
+                # ★★★ 복구된 연결선 (화면 중앙 ~ 손 중심) ★★★
                 cv2.line(frame, (320, 240), (cx, cy), (0, 255, 255), 2)
+                # ---------------------------------------------------------
 
         # 메시지 발행
         msg_data = step + [float(mode_id)]

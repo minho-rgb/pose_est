@@ -26,7 +26,9 @@ setup(
         'console_scripts': [
             'vision = pose_est.vision_node:main',
             'control = pose_est.control_node:main',
-
+            'web = pose_est.vision_node_webcam:main',
+            'control_grip = pose_est.control_grip:main',
+            'web_grip = pose_est.vision_node_webcam_grip:main',
         ],
     },
 )
